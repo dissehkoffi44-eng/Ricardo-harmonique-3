@@ -47,6 +47,7 @@ def upload_to_telegram(file_buffer, filename, caption):
     except: return False
 
 def get_sine_witness(note_mode_str, key_suffix=""):
+    if note_mode_str == "N/A": return ""
     parts = note_mode_str.split(' ')
     note = parts[0]
     mode = parts[1].lower() if len(parts) > 1 else "major"
@@ -99,17 +100,13 @@ def get_camelot_pro(key_mode_str):
 
 # --- MOTEUR ANALYSE OPTIMISÉ ---
 def analyze_segment(y, sr, tuning=0.0):
-    # FILTRAGE SPECTRAL : Passe-bande 60Hz - 1000Hz
     nyq = 0.5 * sr
     low = 60 / nyq
     high = 1000 / nyq
     b, a = butter(4, [low, high], btype='band')
     y_filtered = lfilter(b, a, y)
-
-    # PONDÉRATION D'ÉNERGIE : Ignorer si trop silencieux ou purement percutant (RMS faible)
     rms = np.sqrt(np.mean(y_filtered**2))
-    if rms < 0.01: # Seuil de silence/bruit non-harmonique
-        return None, 0.0
+    if rms < 0.01: return None, 0.0
 
     NOTES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
     chroma = librosa.feature.chroma_cens(y=y_filtered, sr=sr, hop_length=1024, n_chroma=12, tuning=tuning)
@@ -139,18 +136,25 @@ def get_full_analysis(file_bytes, file_name):
         y_seg = y_harm[int(start_t*sr):int((start_t+step)*sr)]
         key_seg, score_seg = analyze_segment(y_seg, sr, tuning=tuning_offset)
         
-        if key_seg: # On n'ajoute que si le segment est validé par l'énergie
+        if key_seg:
             votes.append(key_seg)
             timeline_data.append({"Temps": start_t, "Note": key_seg, "Confiance": round(float(score_seg) * 100, 1)})
-        
         progress_bar.progress(min(start_t / duration, 1.0))
     
     progress_bar.empty()
-    
-    if not votes: # Sécurité si aucun segment n'est détecté
-        return {"file_name": file_name, "recommended": {"note": "N/A", "conf": 0, "label": "ERREUR", "bg": "red"}}
+    if not votes: return {"file_name": file_name, "recommended": {"note": "N/A", "conf": 0, "label": "ERREUR", "bg": "red"}}
 
     df_tl = pd.DataFrame(timeline_data)
+    
+    # LOGIQUE NOTE SOLIDE (Points haute confiance + répétition)
+    solid_notes = df_tl[df_tl['Confiance'] > 85]['Note'].tolist()
+    if solid_notes:
+        note_solide = Counter(solid_notes).most_common(1)[0][0]
+        solid_conf = int(df_tl[df_tl['Note'] == note_solide]['Confiance'].mean())
+    else:
+        note_solide = "N/A"
+        solid_conf = 0
+
     counts = Counter(votes)
     top_votes = counts.most_common(2)
     n1 = top_votes[0][0]
@@ -160,9 +164,7 @@ def get_full_analysis(file_bytes, file_name):
     avg_conf_n1 = df_tl[df_tl['Note'] == n1]['Confiance'].mean()
     musical_bonus = 0
     
-    c1 = get_camelot_pro(n1)
-    c2 = get_camelot_pro(n2)
-    
+    c1, c2 = get_camelot_pro(n1), get_camelot_pro(n2)
     if c1 != "??" and c2 != "??" and n1 != n2:
         val1, mod1 = int(c1[:-1]), c1[-1]
         val2, mod2 = int(c2[:-1]), c2[-1]
@@ -183,6 +185,7 @@ def get_full_analysis(file_bytes, file_name):
     return {
         "file_name": file_name,
         "recommended": {"note": n1, "conf": musical_score, "label": label, "bg": bg},
+        "note_solide": note_solide, "solid_conf": solid_conf,
         "vote": n1, "vote_conf": int(purity),
         "n1": n1, "c1": int(purity), "n2": n2, "c2": int((counts[n2]/len(votes))*100),
         "tempo": int(float(tempo)), "energy": int(np.clip(musical_score/10, 1, 10)),
@@ -215,15 +218,13 @@ with tabs[0]:
                 with st.spinner(f"Analyse intégrale : {f.name}..."):
                     f_bytes = f.read()
                     res = get_full_analysis(f_bytes, f.name)
-                    
                     if res["recommended"]["note"] != "N/A":
                         tg_cap = (f"🎵 {res['file_name']}\n🥁 BPM: {res['tempo']} | E: {res['energy']}/10\n"
                                   f"━━━━━━━━━━━━━━━\n"
-                                  f"🔥 RECOMMANDÉ: {res['recommended']['note']} ({get_camelot_pro(res['recommended']['note'])}) • {res['recommended']['conf']}%\n"
-                                  f"📊 DOMINANTE: {res['vote']} • {res['vote_conf']}%\n"
-                                  f"🥈 SECONDAIRE: {res['n2']} • {res['c2']}%")
+                                  f"🔥 RECOMMANDÉ: {res['recommended']['note']} ({get_camelot_pro(res['recommended']['note'])})\n"
+                                  f"💎 NOTE SOLIDE: {res['note_solide']} ({res['solid_conf']}%)\n"
+                                  f"📊 DOMINANTE: {res['vote']} • {res['vote_conf']}%")
                         upload_to_telegram(io.BytesIO(f_bytes), f.name, tg_cap)
-                    
                     st.session_state.processed_files[fid] = res
                     st.session_state.order_list.insert(0, fid)
 
@@ -238,24 +239,28 @@ with tabs[0]:
                     </div>
                 """, unsafe_allow_html=True)
 
-                c1, c2, c3, c4 = st.columns(4)
+                c1, c2, c3, c4, c5 = st.columns(5)
                 with c1: 
                     st.markdown(f'<div class="metric-container"><div class="label-custom">DOMINANTE</div><div class="value-custom">{res["vote"]}</div><div>{res["vote_conf"]}% présence</div></div>', unsafe_allow_html=True)
                     get_sine_witness(res["vote"], f"dom_{fid}")
-                with c2: 
-                    st.markdown(f'<div class="metric-container"><div class="label-custom">BPM</div><div class="value-custom">{res["tempo"]}</div><div>BPM détecté</div></div>', unsafe_allow_html=True)
+                with c2:
+                    # --- NOUVELLE CASE NOTE SOLIDE ---
+                    st.markdown(f'<div class="metric-container" style="border: 2px solid #FFD700;"><div class="label-custom">💎 NOTE SOLIDE</div><div class="value-custom" style="color: #D4AF37;">{res["note_solide"]}</div><div>Conf. Max: {res["solid_conf"]}%</div></div>', unsafe_allow_html=True)
+                    get_sine_witness(res["note_solide"], f"solid_{fid}")
                 with c3: 
+                    st.markdown(f'<div class="metric-container"><div class="label-custom">BPM</div><div class="value-custom">{res["tempo"]}</div><div>BPM détecté</div></div>', unsafe_allow_html=True)
+                with c4: 
                     st.markdown(f'<div class="metric-container"><div class="label-custom">STABILITÉ 1 & 2</div><div style="font-size:0.9em;">🥇 {res["n1"]} ({res["c1"]}%)</div><div style="font-size:0.9em;">🥈 {res["n2"]} ({res["c2"]}%)</div></div>', unsafe_allow_html=True)
                     col_s1, col_s2 = st.columns(2)
                     with col_s1: get_sine_witness(res["n1"], f"s1_{fid}")
                     with col_s2: get_sine_witness(res["n2"], f"s2_{fid}")
-                with c4: 
+                with c5: 
                     st.markdown(f'<div class="metric-container"><div class="label-custom">ÉNERGIE</div><div class="value-custom">{res["energy"]}/10</div><div>Harmonique</div></div>', unsafe_allow_html=True)
 
-                st.plotly_chart(px.scatter(pd.DataFrame(res['timeline']), x="Temps", y="Note", color="Confiance", size="Confiance", template="plotly_white", title="Analyse Temporelle Totale"), use_container_width=True)
+                st.plotly_chart(px.scatter(pd.DataFrame(res['timeline']), x="Temps", y="Note", color="Confiance", size="Confiance", template="plotly_white", title="Analyse Temporelle Totale (La note solide est la plus récurrente en jaune/haut)"), use_container_width=True)
 
 with tabs[1]:
     if st.session_state.processed_files:
-        hist_data = [{"Fichier": r["file_name"], "Note": r["recommended"]["note"], "Camelot": get_camelot_pro(r["recommended"]["note"]), "BPM": r["tempo"], "Confiance": f"{r['recommended']['conf']}%"} for r in st.session_state.processed_files.values() if r["recommended"]["note"] != "N/A"]
+        hist_data = [{"Fichier": r["file_name"], "Note": r["recommended"]["note"], "Solide": r["note_solide"], "Camelot": get_camelot_pro(r["recommended"]["note"]), "BPM": r["tempo"], "Confiance": f"{r['recommended']['conf']}%"} for r in st.session_state.processed_files.values() if r["recommended"]["note"] != "N/A"]
         if hist_data:
             st.dataframe(pd.DataFrame(hist_data), use_container_width=True)
