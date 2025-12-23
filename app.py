@@ -147,7 +147,7 @@ def get_full_analysis(file_bytes, file_name):
     df_tl = pd.DataFrame(timeline_data)
     
     # LOGIQUE NOTE SOLIDE (Points haute confiance + répétition)
-    solid_notes = df_tl[df_tl['Confiance'] > 85]['Note'].tolist()
+    solid_notes = df_tl[df_tl['Confiance'] > 75]['Note'].tolist()
     if solid_notes:
         note_solide = Counter(solid_notes).most_common(1)[0][0]
         solid_conf = int(df_tl[df_tl['Note'] == note_solide]['Confiance'].mean())
