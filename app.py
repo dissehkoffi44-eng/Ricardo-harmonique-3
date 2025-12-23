@@ -7,7 +7,7 @@ from collections import Counter
 import io
 import streamlit.components.v1 as components
 import requests  
-import gc                    
+import gc                             
 from scipy.signal import butter, lfilter
 
 # --- CONFIGURATION & CSS ---
@@ -36,6 +36,14 @@ BASE_CAMELOT_MINOR = {'Ab':'1A','G#':'1A','Eb':'2A','D#':'2A','Bb':'3A','A#':'3A
 BASE_CAMELOT_MAJOR = {'B':'1B','F#':'2B','Gb':'2B','Db':'3B','C#':'3B','Ab':'4B','G#':'4B','Eb':'5B','D#':'5B','Bb':'6B','A#':'6B','F':'7B','C':'8B','G':'9B','D':'10B','A':'11B','E':'12B'}
 
 # --- FONCTIONS UTILITAIRES ---
+def get_camelot_pro(key_mode_str):
+    try:
+        parts = key_mode_str.split(" ")
+        key, mode = parts[0], parts[1].lower()
+        if mode in ['minor', 'dorian']: return BASE_CAMELOT_MINOR.get(key, "??")
+        else: return BASE_CAMELOT_MAJOR.get(key, "??")
+    except: return "??"
+
 def upload_to_telegram(file_buffer, filename, caption):
     try:
         file_buffer.seek(0)
@@ -90,14 +98,6 @@ def get_sine_witness(note_mode_str, key_suffix=""):
     </script>
     """, height=40)
 
-def get_camelot_pro(key_mode_str):
-    try:
-        parts = key_mode_str.split(" ")
-        key, mode = parts[0], parts[1].lower()
-        if mode in ['minor', 'dorian']: return BASE_CAMELOT_MINOR.get(key, "??")
-        else: return BASE_CAMELOT_MAJOR.get(key, "??")
-    except: return "??"
-
 # --- MOTEUR ANALYSE OPTIMISÉ ---
 def analyze_segment(y, sr, tuning=0.0):
     nyq = 0.5 * sr
@@ -146,8 +146,6 @@ def get_full_analysis(file_bytes, file_name):
 
     df_tl = pd.DataFrame(timeline_data)
     
-    # --- LOGIQUE AMÉLIORÉE : NOTE SOLIDE (Stabilité & Repos Graphique) ---
-    # On identifie la note qui crée les lignes horizontales les plus stables
     df_tl['is_stable'] = df_tl['Note'] == df_tl['Note'].shift(1)
     stability_scores = {}
     unique_notes = df_tl['Note'].unique()
@@ -156,10 +154,7 @@ def get_full_analysis(file_bytes, file_name):
         note_mask = df_tl['Note'] == note
         count = note_mask.sum()
         avg_conf = df_tl[note_mask]['Confiance'].mean()
-        # Bonus si la note se répète de façon consécutive (repos graphique)
         repos_bonus = df_tl[note_mask & df_tl['is_stable']].shape[0] * 1.5
-        
-        # Formule hybride : Fréquence (40%) + Confiance (30%) + Stabilité/Repos (30%)
         stability_scores[note] = (count * 0.4) + (avg_conf * 0.3) + (repos_bonus * 0.3)
 
     if stability_scores:
@@ -233,11 +228,12 @@ with tabs[0]:
                     f_bytes = f.read()
                     res = get_full_analysis(f_bytes, f.name)
                     if res["recommended"]["note"] != "N/A":
+                        # --- RAPPORT TELEGRAM AVEC CAMELOT ---
                         tg_cap = (f"🎵 {res['file_name']}\n🥁 BPM: {res['tempo']} | E: {res['energy']}/10\n"
                                   f"━━━━━━━━━━━━━━━\n"
                                   f"🔥 RECOMMANDÉ: {res['recommended']['note']} ({get_camelot_pro(res['recommended']['note'])})\n"
-                                  f"💎 NOTE SOLIDE: {res['note_solide']} ({res['solid_conf']}%)\n"
-                                  f"📊 DOMINANTE: {res['vote']} • {res['vote_conf']}%")
+                                  f"💎 NOTE SOLIDE: {res['note_solide']} ({get_camelot_pro(res['note_solide'])})\n"
+                                  f"📊 DOMINANTE: {res['vote']} ({get_camelot_pro(res['vote'])}) • {res['vote_conf']}%")
                         upload_to_telegram(io.BytesIO(f_bytes), f.name, tg_cap)
                     st.session_state.processed_files[fid] = res
                     st.session_state.order_list.insert(0, fid)
@@ -255,15 +251,15 @@ with tabs[0]:
 
                 c1, c2, c3, c4, c5 = st.columns(5)
                 with c1: 
-                    st.markdown(f'<div class="metric-container"><div class="label-custom">DOMINANTE</div><div class="value-custom">{res["vote"]}</div><div>{res["vote_conf"]}% présence</div></div>', unsafe_allow_html=True)
+                    st.markdown(f'<div class="metric-container"><div class="label-custom">DOMINANTE</div><div class="value-custom">{res["vote"]}</div><div>{get_camelot_pro(res["vote"])} • {res["vote_conf"]}% presence</div></div>', unsafe_allow_html=True)
                     get_sine_witness(res["vote"], f"dom_{fid}")
                 with c2:
-                    st.markdown(f'<div class="metric-container" style="border: 2px solid #FFD700;"><div class="label-custom">💎 NOTE SOLIDE</div><div class="value-custom" style="color: #D4AF37;">{res["note_solide"]}</div><div>Repos stable : {res["solid_conf"]}%</div></div>', unsafe_allow_html=True)
+                    st.markdown(f'<div class="metric-container" style="border: 2px solid #FFD700;"><div class="label-custom">💎 NOTE SOLIDE</div><div class="value-custom" style="color: #D4AF37;">{res["note_solide"]}</div><div>{get_camelot_pro(res["note_solide"])} • {res["solid_conf"]}%</div></div>', unsafe_allow_html=True)
                     get_sine_witness(res["note_solide"], f"solid_{fid}")
                 with c3: 
                     st.markdown(f'<div class="metric-container"><div class="label-custom">BPM</div><div class="value-custom">{res["tempo"]}</div><div>BPM détecté</div></div>', unsafe_allow_html=True)
                 with c4: 
-                    st.markdown(f'<div class="metric-container"><div class="label-custom">STABILITÉ 1 & 2</div><div style="font-size:0.9em;">🥇 {res["n1"]} ({res["c1"]}%)</div><div style="font-size:0.9em;">🥈 {res["n2"]} ({res["c2"]}%)</div></div>', unsafe_allow_html=True)
+                    st.markdown(f'<div class="metric-container"><div class="label-custom">STABILITÉ 1 & 2</div><div style="font-size:0.9em;">🥇 {res["n1"]} ({get_camelot_pro(res["n1"])})</div><div style="font-size:0.9em;">🥈 {res["n2"]} ({get_camelot_pro(res["n2"])})</div></div>', unsafe_allow_html=True)
                     col_s1, col_s2 = st.columns(2)
                     with col_s1: get_sine_witness(res["n1"], f"s1_{fid}")
                     with col_s2: get_sine_witness(res["n2"], f"s2_{fid}")
@@ -274,6 +270,11 @@ with tabs[0]:
 
 with tabs[1]:
     if st.session_state.processed_files:
-        hist_data = [{"Fichier": r["file_name"], "Note": r["recommended"]["note"], "Solide": r["note_solide"], "Camelot": get_camelot_pro(r["recommended"]["note"]), "BPM": r["tempo"], "Confiance": f"{r['recommended']['conf']}%"} for r in st.session_state.processed_files.values() if r["recommended"]["note"] != "N/A"]
+        hist_data = [{"Fichier": r["file_name"], 
+                      "Note": f"{r['recommended']['note']} ({get_camelot_pro(r['recommended']['note'])})", 
+                      "Solide": f"{r['note_solide']} ({get_camelot_pro(r['note_solide'])})", 
+                      "Camelot": get_camelot_pro(r["recommended"]["note"]), 
+                      "BPM": r["tempo"], 
+                      "Confiance": f"{r['recommended']['conf']}%"} for r in st.session_state.processed_files.values() if r["recommended"]["note"] != "N/A"]
         if hist_data:
             st.dataframe(pd.DataFrame(hist_data), use_container_width=True)
