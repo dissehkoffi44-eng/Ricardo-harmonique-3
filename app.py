@@ -146,10 +146,24 @@ def get_full_analysis(file_bytes, file_name):
 
     df_tl = pd.DataFrame(timeline_data)
     
-    # LOGIQUE NOTE SOLIDE (Points haute confiance + répétition)
-    solid_notes = df_tl[df_tl['Confiance'] > 75]['Note'].tolist()
-    if solid_notes:
-        note_solide = Counter(solid_notes).most_common(1)[0][0]
+    # --- LOGIQUE AMÉLIORÉE : NOTE SOLIDE (Stabilité & Repos Graphique) ---
+    # On identifie la note qui crée les lignes horizontales les plus stables
+    df_tl['is_stable'] = df_tl['Note'] == df_tl['Note'].shift(1)
+    stability_scores = {}
+    unique_notes = df_tl['Note'].unique()
+    
+    for note in unique_notes:
+        note_mask = df_tl['Note'] == note
+        count = note_mask.sum()
+        avg_conf = df_tl[note_mask]['Confiance'].mean()
+        # Bonus si la note se répète de façon consécutive (repos graphique)
+        repos_bonus = df_tl[note_mask & df_tl['is_stable']].shape[0] * 1.5
+        
+        # Formule hybride : Fréquence (40%) + Confiance (30%) + Stabilité/Repos (30%)
+        stability_scores[note] = (count * 0.4) + (avg_conf * 0.3) + (repos_bonus * 0.3)
+
+    if stability_scores:
+        note_solide = max(stability_scores, key=stability_scores.get)
         solid_conf = int(df_tl[df_tl['Note'] == note_solide]['Confiance'].mean())
     else:
         note_solide = "N/A"
@@ -244,8 +258,7 @@ with tabs[0]:
                     st.markdown(f'<div class="metric-container"><div class="label-custom">DOMINANTE</div><div class="value-custom">{res["vote"]}</div><div>{res["vote_conf"]}% présence</div></div>', unsafe_allow_html=True)
                     get_sine_witness(res["vote"], f"dom_{fid}")
                 with c2:
-                    # --- NOUVELLE CASE NOTE SOLIDE ---
-                    st.markdown(f'<div class="metric-container" style="border: 2px solid #FFD700;"><div class="label-custom">💎 NOTE SOLIDE</div><div class="value-custom" style="color: #D4AF37;">{res["note_solide"]}</div><div>Conf. Max: {res["solid_conf"]}%</div></div>', unsafe_allow_html=True)
+                    st.markdown(f'<div class="metric-container" style="border: 2px solid #FFD700;"><div class="label-custom">💎 NOTE SOLIDE</div><div class="value-custom" style="color: #D4AF37;">{res["note_solide"]}</div><div>Repos stable : {res["solid_conf"]}%</div></div>', unsafe_allow_html=True)
                     get_sine_witness(res["note_solide"], f"solid_{fid}")
                 with c3: 
                     st.markdown(f'<div class="metric-container"><div class="label-custom">BPM</div><div class="value-custom">{res["tempo"]}</div><div>BPM détecté</div></div>', unsafe_allow_html=True)
@@ -257,7 +270,7 @@ with tabs[0]:
                 with c5: 
                     st.markdown(f'<div class="metric-container"><div class="label-custom">ÉNERGIE</div><div class="value-custom">{res["energy"]}/10</div><div>Harmonique</div></div>', unsafe_allow_html=True)
 
-                st.plotly_chart(px.scatter(pd.DataFrame(res['timeline']), x="Temps", y="Note", color="Confiance", size="Confiance", template="plotly_white", title="Analyse Temporelle Totale (La note solide est la plus récurrente en jaune/haut)"), use_container_width=True)
+                st.plotly_chart(px.scatter(pd.DataFrame(res['timeline']), x="Temps", y="Note", color="Confiance", size="Confiance", template="plotly_white", title="Analyse Temporelle Totale (La note solide est la ligne de repos la plus stable)"), use_container_width=True)
 
 with tabs[1]:
     if st.session_state.processed_files:
