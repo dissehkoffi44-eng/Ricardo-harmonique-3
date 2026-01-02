@@ -149,7 +149,6 @@ def get_sine_witness(note_mode_str, key_suffix=""):
 
 @st.cache_data(show_spinner=False, max_entries=5)
 def get_full_analysis(file_bytes, file_name):
-    # Downsampling à 16kHz pour économiser 30% de RAM sans perdre en précision harmonique
     y_raw, sr = librosa.load(io.BytesIO(file_bytes), sr=16000, mono=True)
     y = apply_bandpass_filter(y_raw, sr)
     tuning = librosa.estimate_tuning(y=y, sr=sr)
@@ -162,11 +161,12 @@ def get_full_analysis(file_bytes, file_name):
     intro_chroma = librosa.feature.chroma_cens(y=y_intro, sr=sr)
     harmonic_intensity = np.mean(intro_chroma)
     
-    # Seuil : si l'intensité harmonique est trop faible, c'est probablement juste de la percussion
     if harmonic_intensity < 0.15:
         start_cut = int(duration * 0.15 * sr)
+        intro_type = "🥁 Percussion (ignorée)"
     else:
-        start_cut = 0 # Intro mélodique, on garde tout
+        start_cut = 0 
+        intro_type = "🎹 Mélodique (incluse)"
         
     end_cut = int(duration * 0.85 * sr)
     chroma_global = np.mean(librosa.feature.chroma_cens(y=y_harm[start_cut:end_cut], sr=sr), axis=1)
@@ -194,13 +194,11 @@ def get_full_analysis(file_bytes, file_name):
 
     if not timeline_data: return None
     
-    # Décision
     df_tl = pd.DataFrame(timeline_data)
     n1 = weighted_scores.most_common(1)[0][0]
     n2 = weighted_scores.most_common(2)[1][0] if len(weighted_scores) > 1 else n1
     note_solide = df_tl['Note'].mode()[0]
     
-    # Logique de raffinement
     score_n1 = validate_coherence(chroma_global, n1)
     score_solide = validate_coherence(chroma_global, note_solide)
     if score_solide > score_n1 + 0.1: n1 = note_solide
@@ -215,7 +213,6 @@ def get_full_analysis(file_bytes, file_name):
     
     tempo, _ = librosa.beat.beat_track(y=y_raw, sr=sr)
     
-    # Image pour Telegram
     fig_tg = px.line(df_tl, x="Temps", y="Note", markers=True, template="plotly_dark")
     fig_tg.update_layout(yaxis={'categoryorder':'array', 'categoryarray':NOTES_ORDER})
     plot_img = fig_tg.to_image(format="png", width=800, height=400)
@@ -225,7 +222,8 @@ def get_full_analysis(file_bytes, file_name):
         "recommended": {"note": n1, "conf": final_conf, "bg": bg},
         "note_solide": note_solide, "solid_conf": int(df_tl[df_tl['Note'] == note_solide]['Confiance'].mean()),
         "timeline": timeline_data, "is_cadence": is_cad, "is_relative": is_rel,
-        "duration": duration, "plot_img": plot_img
+        "duration": duration, "plot_img": plot_img, "intro_type": intro_type,
+        "tuning": round(tuning, 2)
     }
     del y_raw, y, y_harm; gc.collect()
     return res
@@ -260,17 +258,29 @@ with tabs[0]:
                 res = get_full_analysis(f_bytes, f.name)
                 
                 if res:
+                    # --- RAPPORT TELEGRAM DÉTAILLÉ ---
                     tg_cap = (
-                        f"🎧 *RAPPORT RCDJ228*\n"
-                        f"📄 `{res['file_name']}`\n"
-                        f"⏱ `{int(res['duration'])}s` | 🥁 `{res['tempo']} BPM`\n\n"
-                        f"🎹 CLÉ : `{res['recommended']['note'].upper()}`\n"
-                        f"🎼 CAMELOT : `{get_camelot_pro(res['recommended']['note'])}`\n"
-                        f"🎯 FIDÉLITÉ : `{res['recommended']['conf']}%`"
+                        f"🚀 *NOUVELLE ANALYSE TERMINÉE*\n"
+                        f"━━━━━━━━━━━━━━━━━━━━\n"
+                        f"📁 *Fichier :* `{res['file_name']}`\n"
+                        f"⏱ *Durée :* `{int(res['duration'])}s` | 🥁 *Tempo :* `{res['tempo']} BPM`\n"
+                        f"🎸 *Accordage :* `{res['tuning']} Hz`\n"
+                        f"━━━━━━━━━━━━━━━━━━━━\n"
+                        f"💎 *RÉSULTAT PRINCIPAL*\n"
+                        f"🎹 *Clé recommandée :* `{res['recommended']['note'].upper()}`\n"
+                        f"🎼 *Système Camelot :* `{get_camelot_pro(res['recommended']['note'])}`\n"
+                        f"🎯 *Indice de Fidélité :* `{res['recommended']['conf']}%`\n"
+                        f"━━━━━━━━━━━━━━━━━━━━\n"
+                        f"🔍 *DÉTAILS TECHNIQUES*\n"
+                        f"✨ *Note la plus stable :* `{res['note_solide']}`\n"
+                        f"🚩 *Type d'introduction :* `{res['intro_type']}`\n"
+                        f"🔄 *Tonalité Relative :* `{'OUI ✅' if res['is_relative'] else 'NON ❌'}`\n"
+                        f"🎼 *Cadence Parfaite :* `{'DÉTECTÉE 🎯' if res['is_cadence'] else 'AUCUNE'}`\n"
+                        f"━━━━━━━━━━━━━━━━━━━━\n"
+                        f"🎧 *Généré par RCDJ228 Hkey 3 PRO*"
                     )
                     upload_to_telegram(io.BytesIO(f_bytes), f.name, tg_cap, res["plot_img"])
                     
-                    # Nettoyage de l'image avant stockage en session (CRUCIAL pour la RAM)
                     del res["plot_img"]
                     st.session_state.processed_files[fid] = res
                     st.session_state.order_list.insert(0, fid)
