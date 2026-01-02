@@ -156,7 +156,7 @@ def analyze_segment_pro(y_seg, sr, tuning):
 @st.cache_data(show_spinner="Analyse Harmonique Haute Précision...", max_entries=10)
 def get_full_analysis(file_bytes, file_name):
     # Charge 180s max pour la précision sans saturer la RAM
-    y, sr = librosa.load(io.BytesIO(file_bytes), sr=22050, duration=180)
+    y, sr = librosa.load(io.BytesIO(file_bytes), sr=22050, duration=None)
     tuning = librosa.estimate_tuning(y=y, sr=sr)
     
     # Isolation harmonique renforcée (margin=3.0 pour éliminer plus de drums)
