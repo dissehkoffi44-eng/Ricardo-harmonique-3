@@ -156,8 +156,19 @@ def get_full_analysis(file_bytes, file_name):
     y_harm = librosa.effects.harmonic(y, margin=3.0)
     duration = librosa.get_duration(y=y, sr=sr)
     
-    # Analyse Globale
-    start_cut, end_cut = int(duration * 0.15 * sr), int(duration * 0.85 * sr)
+    # --- ANALYSE GLOBALE AVEC DÉTECTION D'INTRO ---
+    intro_dur = min(15, duration * 0.15)
+    y_intro = y_harm[:int(intro_dur * sr)]
+    intro_chroma = librosa.feature.chroma_cens(y=y_intro, sr=sr)
+    harmonic_intensity = np.mean(intro_chroma)
+    
+    # Seuil : si l'intensité harmonique est trop faible, c'est probablement juste de la percussion
+    if harmonic_intensity < 0.15:
+        start_cut = int(duration * 0.15 * sr)
+    else:
+        start_cut = 0 # Intro mélodique, on garde tout
+        
+    end_cut = int(duration * 0.85 * sr)
     chroma_global = np.mean(librosa.feature.chroma_cens(y=y_harm[start_cut:end_cut], sr=sr), axis=1)
     
     # Timeline
