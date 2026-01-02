@@ -6,19 +6,18 @@ import plotly.express as px
 from collections import Counter
 import io
 import streamlit.components.v1 as components
-import requests  
-import gc                                            
+import requests                                         
+import gc                                               
 from scipy.signal import butter, lfilter
-from concurrent.futures import ThreadPoolExecutor
 
 # --- CONFIGURATION SÉCURISÉE & SECRETS ---
 TELEGRAM_TOKEN = st.secrets.get("TELEGRAM_TOKEN", "7751365982:AAFLbeRoPsDx5OyIOlsgHcGKpI12hopzCYo")
 CHAT_ID = st.secrets.get("CHAT_ID", "-1003602454394")
 
 # --- CONFIGURATION PAGE ---
-st.set_page_config(page_title="RCDJ228 HARMONIC 3", page_icon="🎧", layout="wide")
+st.set_page_config(page_title="RCDJ228 Mkey 3 PRO", page_icon="🎧", layout="wide")
 
-# --- STYLES CSS (Original conservé) ---
+# --- STYLES CSS ---
 st.markdown("""
     <style>
     .main { background-color: #0e1117; color: white; }
@@ -48,13 +47,18 @@ BASE_CAMELOT_MAJOR = {'B':'1B','F#':'2B','Gb':'2B','Db':'3B','C#':'3B','Ab':'4B'
 NOTES_LIST = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
 NOTES_ORDER = [f"{n} {m}" for n in NOTES_LIST for m in ['major', 'minor']]
 
-# Profils Krumhansl-Schmuckler (Précision musicale supérieure)
 PROFILES = {
     "major": [6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88],
     "minor": [6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17]
 }
 
 # --- FONCTIONS LOGIQUES ---
+
+def apply_bandpass_filter(y, sr, lowcut=100, highcut=3000):
+    nyq = 0.5 * sr
+    low, high = lowcut / nyq, highcut / nyq
+    b, a = butter(4, [low, high], btype='band')
+    return lfilter(b, a, y)
 
 def get_camelot_pro(key_mode_str):
     try:
@@ -63,6 +67,15 @@ def get_camelot_pro(key_mode_str):
         if mode in ['minor', 'dorian']: return BASE_CAMELOT_MINOR.get(key, "??")
         return BASE_CAMELOT_MAJOR.get(key, "??")
     except: return "??"
+
+def validate_coherence(chroma_avg, proposed_key):
+    try:
+        parts = proposed_key.split(" ")
+        note_name, mode = parts[0], parts[1].lower()
+        idx = NOTES_LIST.index(note_name)
+        theoretical_profile = np.roll(PROFILES[mode], idx)
+        return np.corrcoef(chroma_avg, theoretical_profile)[0, 1]
+    except: return 0
 
 def detect_perfect_cadence(n1, n2):
     try:
@@ -99,8 +112,7 @@ def upload_to_telegram(file_buffer, filename, caption, plot_bytes=None):
 def get_sine_witness(note_mode_str, key_suffix=""):
     if note_mode_str == "N/A": return ""
     parts = note_mode_str.split(' ')
-    note = parts[0]
-    mode = parts[1].lower() if len(parts) > 1 else "major"
+    note, mode = parts[0], parts[1].lower() if len(parts) > 1 else "major"
     unique_id = f"playBtn_{note}_{mode}_{key_suffix}".replace("#", "sharp").replace(".", "_")
     return components.html(f"""
     <div style="display: flex; align-items: center; justify-content: center; gap: 10px; font-family: sans-serif;">
@@ -109,7 +121,7 @@ def get_sine_witness(note_mode_str, key_suffix=""):
     </div>
     <script>
     const notesFreq = {{'C':261.63,'C#':277.18,'D':293.66,'D#':311.13,'E':329.63,'F':349.23,'F#':369.99,'G':392.00,'G#':415.30,'A':440.00,'A#':466.16,'B':493.88}};
-    let audioCtx = null; let activeNodes = [];
+    let audioCtx = null;
     function playNote(freq, startTime) {{
         const osc = audioCtx.createOscillator(); const gain = audioCtx.createGain();
         osc.type = 'triangle'; osc.frequency.setValueAtTime(freq, startTime);
@@ -118,121 +130,103 @@ def get_sine_witness(note_mode_str, key_suffix=""):
         gain.gain.exponentialRampToValueAtTime(0.01, startTime + 2.5);
         osc.connect(gain); gain.connect(audioCtx.destination);
         osc.start(startTime); osc.stop(startTime + 2.6);
-        return {{osc, gain}};
     }}
     document.getElementById('{unique_id}').onclick = function() {{
         if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-        if (this.innerText === '▶') {{
-            this.innerText = '◼'; this.style.background = '#E74C3C';
-            const isMinor = '{mode}' === 'minor';
-            const intervals = isMinor ? [0, 3, 7, 12] : [0, 4, 7, 12];
-            const now = audioCtx.currentTime;
-            intervals.forEach((interval, index) => {{
-                const freq = notesFreq['{note}'] * Math.pow(2, interval / 12);
-                activeNodes.push(playNote(freq, now + (index * 0.02)));
-            }});
-            setTimeout(() => {{ this.innerText = '▶'; this.style.background = '#6366F1'; activeNodes = []; }}, 2500);
-        }}
+        this.innerText = '◼'; this.style.background = '#E74C3C';
+        const isMinor = '{mode}' === 'minor';
+        const intervals = isMinor ? [0, 3, 7, 12] : [0, 4, 7, 12];
+        const now = audioCtx.currentTime;
+        intervals.forEach((interval, index) => {{
+            const freq = notesFreq['{note}'] * Math.pow(2, interval / 12);
+            playNote(freq, now + (index * 0.02));
+        }});
+        setTimeout(() => {{ this.innerText = '▶'; this.style.background = '#6366F1'; }}, 2500);
     }};
-    </script>
-    """, height=40)
+    </script>""", height=40)
 
-def analyze_segment_pro(y_seg, sr, tuning):
-    # Chroma CQT pour une résolution fréquentielle optimale
-    chroma = librosa.feature.chroma_cqt(y=y_seg, sr=sr, tuning=tuning)
-    chroma_avg = np.mean(chroma, axis=1)
-    
-    # Calcul de l'énergie (RMS) pour la pondération
-    rms = np.mean(librosa.feature.rms(y=y_seg))
-    
-    best_score, res_key = -1, ""
-    for mode, profile in PROFILES.items():
-        for i in range(12):
-            score = np.corrcoef(chroma_avg, np.roll(profile, i))[0, 1]
-            if score > best_score:
-                best_score, res_key = score, f"{NOTES_LIST[i]} {mode}"
-    return res_key, best_score, rms
+# --- COEUR DE L'ANALYSE (OPTIMISATION RAM) ---
 
-@st.cache_data(show_spinner="Analyse Harmonique Haute Précision...", max_entries=10)
+@st.cache_data(show_spinner=False, max_entries=5)
 def get_full_analysis(file_bytes, file_name):
-    # Charge 180s max pour la précision sans saturer la RAM
-    y, sr = librosa.load(io.BytesIO(file_bytes), sr=22050, duration=None)
+    # Downsampling à 16kHz pour économiser 30% de RAM sans perdre en précision harmonique
+    y_raw, sr = librosa.load(io.BytesIO(file_bytes), sr=16000, mono=True)
+    y = apply_bandpass_filter(y_raw, sr)
     tuning = librosa.estimate_tuning(y=y, sr=sr)
-    
-    # Isolation harmonique renforcée (margin=3.0 pour éliminer plus de drums)
     y_harm = librosa.effects.harmonic(y, margin=3.0)
     duration = librosa.get_duration(y=y, sr=sr)
     
-    step = 6 # Segments plus courts pour plus de finesse
-    segments_data = []
+    # Analyse Globale
+    start_cut, end_cut = int(duration * 0.15 * sr), int(duration * 0.85 * sr)
+    chroma_global = np.mean(librosa.feature.chroma_cens(y=y_harm[start_cut:end_cut], sr=sr), axis=1)
     
-    # Préparation des segments
+    # Timeline
+    step, timeline_data = 6, []
+    weighted_scores = Counter()
+    
     for start_t in range(0, int(duration) - step, step):
         y_seg = y_harm[int(start_t*sr):int((start_t+step)*sr)]
-        segments_data.append((y_seg, sr, tuning, start_t))
-
-    # ANALYSE MULTI-THREADÉE (Vitesse ++ )
-    timeline_data = []
-    votes_weighted = []
-    
-    with ThreadPoolExecutor() as executor:
-        results = list(executor.map(lambda x: (analyze_segment_pro(x[0], x[1], x[2]), x[3]), segments_data))
-
-    for (res_key, score, rms), start_t in results:
-        # Pondération : les segments plus forts comptent plus
-        weight = int(rms * 100) + 1
-        votes_weighted.extend([res_key] * weight)
-        timeline_data.append({
-            "Temps": start_t, "Note": res_key, 
-            "Camelot": get_camelot_pro(res_key), "Confiance": round(float(score)*100, 1)
-        })
+        chroma = librosa.feature.chroma_cens(y=y_seg, sr=sr, bins_per_octave=36)
+        chroma_avg = np.mean(chroma, axis=1)
+        rms = np.mean(librosa.feature.rms(y=y_seg))
+        
+        best_score, res_key = -1, ""
+        for mode, profile in PROFILES.items():
+            for i in range(12):
+                score = np.corrcoef(chroma_avg, np.roll(profile, i))[0, 1]
+                if score > best_score:
+                    best_score, res_key = score, f"{NOTES_LIST[i]} {mode}"
+        
+        weight = int(rms * 100) + 5
+        weighted_scores[res_key] += weight
+        timeline_data.append({"Temps": start_t, "Note": res_key, "Confiance": round(float(best_score)*100, 1)})
 
     if not timeline_data: return None
+    
+    # Décision
     df_tl = pd.DataFrame(timeline_data)
+    n1 = weighted_scores.most_common(1)[0][0]
+    n2 = weighted_scores.most_common(2)[1][0] if len(weighted_scores) > 1 else n1
+    note_solide = df_tl['Note'].mode()[0]
     
-    # Décision finale basée sur les votes pondérés
-    counts = Counter(votes_weighted)
-    n1 = counts.most_common(1)[0][0]
-    n2 = counts.most_common(2)[1][0] if len(counts) > 1 else n1
+    # Logique de raffinement
+    score_n1 = validate_coherence(chroma_global, n1)
+    score_solide = validate_coherence(chroma_global, note_solide)
+    if score_solide > score_n1 + 0.1: n1 = note_solide
     
-    # Logique musicale (Relative / Cadence)
     is_rel, rel_pref = detect_relative_key(n1, n2)
     if is_rel: n1 = rel_pref
     is_cad, cad_root = detect_perfect_cadence(n1, n2)
     if is_cad: n1 = cad_root
 
-    # Note solide (Stabilité temporelle)
-    note_solide = df_tl['Note'].mode()[0]
-    solid_conf = int(df_tl[df_tl['Note'] == note_solide]['Confiance'].mean())
-
-    purity = (counts[n1] / len(votes_weighted)) * 100
-    musical_score = min(int((purity * 0.4) + (solid_conf * 0.6) + (20 if is_cad or is_rel else 0)), 100)
-
-    bg = "linear-gradient(135deg, #1D976C, #93F9B9)" if musical_score > 75 else "linear-gradient(135deg, #2193B0, #6DD5ED)"
-    tempo, _ = librosa.beat.beat_track(y=y, sr=sr)
-
-    # Graphe Telegram
+    final_conf = int(validate_coherence(chroma_global, n1) * 100)
+    bg = "linear-gradient(135deg, #1D976C, #93F9B9)" if final_conf > 80 else "linear-gradient(135deg, #2193B0, #6DD5ED)"
+    
+    tempo, _ = librosa.beat.beat_track(y=y_raw, sr=sr)
+    
+    # Image pour Telegram
     fig_tg = px.line(df_tl, x="Temps", y="Note", markers=True, template="plotly_dark")
     fig_tg.update_layout(yaxis={'categoryorder':'array', 'categoryarray':NOTES_ORDER})
     plot_img = fig_tg.to_image(format="png", width=800, height=400)
 
     res = {
         "file_name": file_name, "tempo": int(float(tempo)),
-        "recommended": {"note": n1, "conf": musical_score, "bg": bg, "label": "NOTE PRO"},
-        "note_solide": note_solide, "solid_conf": solid_conf,
+        "recommended": {"note": n1, "conf": final_conf, "bg": bg},
+        "note_solide": note_solide, "solid_conf": int(df_tl[df_tl['Note'] == note_solide]['Confiance'].mean()),
         "timeline": timeline_data, "is_cadence": is_cad, "is_relative": is_rel,
-        "energy": int(np.clip(musical_score/10, 1, 10)), "plot_img": plot_img
+        "duration": duration, "plot_img": plot_img
     }
-    del y, y_harm; gc.collect()
+    del y_raw, y, y_harm; gc.collect()
     return res
 
-# --- INTERFACE (Structure originale préservée) ---
-st.title("🎧 RCDJ228 HARMONIC 3")
+# --- INTERFACE ---
+st.title("🎧 RCDJ228 Mkey 3 PRO")
 
 with st.sidebar:
     st.header("⚙️ SYSTÈME")
     if st.button("🧹 RESET CACHE"):
         st.session_state.processed_files = {}
+        st.session_state.order_list = []
         st.cache_data.clear()
         st.rerun()
 
@@ -244,30 +238,53 @@ tabs = st.tabs(["🚀 ANALYSEUR", "📜 HISTORIQUE"])
 
 with tabs[0]:
     if files:
-        for f in reversed(files):
+        progress_text = st.empty()
+        global_bar = st.progress(0)
+        
+        for index, f in enumerate(files):
             fid = f"{f.name}_{f.size}"
             if fid not in st.session_state.processed_files:
+                progress_text.text(f"⏳ Analyse de {f.name} ({index+1}/{len(files)})...")
                 f_bytes = f.read()
                 res = get_full_analysis(f_bytes, f.name)
+                
                 if res:
-                    tg_cap = f"🎵 *RAPPORT PRO*\n📄 `{res['file_name']}`\n🎹 `{res['recommended']['note'].upper()}` ({get_camelot_pro(res['recommended']['note'])})\n🎯 Confiance: {res['recommended']['conf']}%"
+                    tg_cap = (
+                        f"🎧 *RAPPORT RCDJ228*\n"
+                        f"📄 `{res['file_name']}`\n"
+                        f"⏱ `{int(res['duration'])}s` | 🥁 `{res['tempo']} BPM`\n\n"
+                        f"🎹 CLÉ : `{res['recommended']['note'].upper()}`\n"
+                        f"🎼 CAMELOT : `{get_camelot_pro(res['recommended']['note'])}`\n"
+                        f"🎯 FIDÉLITÉ : `{res['recommended']['conf']}%`"
+                    )
                     upload_to_telegram(io.BytesIO(f_bytes), f.name, tg_cap, res["plot_img"])
+                    
+                    # Nettoyage de l'image avant stockage en session (CRUCIAL pour la RAM)
+                    del res["plot_img"]
                     st.session_state.processed_files[fid] = res
                     st.session_state.order_list.insert(0, fid)
+                
+                del f_bytes
+                gc.collect()
+            global_bar.progress((index + 1) / len(files))
+        
+        progress_text.empty()
+        global_bar.empty()
 
         for fid in st.session_state.order_list:
-            res = st.session_state.processed_files[fid]
-            with st.expander(f"📊 {res['file_name']}", expanded=True):
-                st.markdown(f'<div class="final-decision-box" style="background:{res["recommended"]["bg"]};"><h1>{res["recommended"]["note"]}</h1><h2>CAMELOT: {get_camelot_pro(res["recommended"]["note"])} • {res["recommended"]["conf"]}%</h2></div>', unsafe_allow_html=True)
-                st.markdown(f'<div class="solid-note-box">💎 NOTE SOLIDE: {res["note_solide"]} ({res["solid_conf"]}%)</div>', unsafe_allow_html=True)
-                
-                c1, c2, c3, c4 = st.columns(4)
-                with c1: st.markdown(f'<div class="metric-container">BPM<br><div class="value-custom">{res["tempo"]}</div></div>', unsafe_allow_html=True)
-                with c2: get_sine_witness(res["note_solide"], fid)
-                with c3: st.markdown(f'<div class="metric-container">ÉNERGIE<br><div class="value-custom">{res["energy"]}/10</div></div>', unsafe_allow_html=True)
-                with c4: st.markdown(f'<div class="metric-container">CADENCE<br><div class="value-custom">{"OUI" if res["is_cadence"] else "NON"}</div></div>', unsafe_allow_html=True)
-                
-                st.plotly_chart(px.line(pd.DataFrame(res['timeline']), x="Temps", y="Note", template="plotly_dark").update_layout(yaxis={'categoryorder':'array', 'categoryarray':NOTES_ORDER}), use_container_width=True)
+            res = st.session_state.processed_files.get(fid)
+            if res:
+                with st.expander(f"📊 {res['file_name']}", expanded=True):
+                    st.markdown(f'<div class="final-decision-box" style="background:{res["recommended"]["bg"]};"><h1>{res["recommended"]["note"]}</h1><h2>CAMELOT: {get_camelot_pro(res["recommended"]["note"])} • CERTITUDE: {res["recommended"]["conf"]}%</h2></div>', unsafe_allow_html=True)
+                    st.markdown(f'<div class="solid-note-box">💎 NOTE STABLE: {res["note_solide"]} ({res["solid_conf"]}% de confiance)</div>', unsafe_allow_html=True)
+                    
+                    c1, c2, c3, c4 = st.columns(4)
+                    with c1: st.markdown(f'<div class="metric-container">BPM<br><div class="value-custom">{res["tempo"]}</div></div>', unsafe_allow_html=True)
+                    with c2: get_sine_witness(res["recommended"]["note"], fid)
+                    with c3: st.markdown(f'<div class="metric-container">COHÉRENCE<br><div class="value-custom">{res["recommended"]["conf"]}%</div></div>', unsafe_allow_html=True)
+                    with c4: st.markdown(f'<div class="metric-container">CADENCE<br><div class="value-custom">{"OUI" if res["is_cadence"] else "NON"}</div></div>', unsafe_allow_html=True)
+                    
+                    st.plotly_chart(px.line(pd.DataFrame(res['timeline']), x="Temps", y="Note", template="plotly_dark").update_layout(yaxis={'categoryorder':'array', 'categoryarray':NOTES_ORDER}), use_container_width=True)
 
 with tabs[1]:
     if st.session_state.processed_files:
